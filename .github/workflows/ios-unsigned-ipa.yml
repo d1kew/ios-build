@@ -1,0 +1,102 @@
+name: Build unsigned IPA from Xcode project
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: iOS bundle identifier
+        required: true
+        default: com.GhostStudio.StandRazval
+        type: string
+      build_number:
+        description: iOS build number
+        required: true
+        default: "1"
+        type: string
+      archive_url:
+        description: Direct HTTPS URL for ZIP containing Unity-iPhone.xcodeproj at its root
+        required: true
+        type: string
+      archive_sha256:
+        description: SHA-256 of the ZIP file
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    env:
+      IOS_BUNDLE_ID: ${{ inputs.bundle_id }}
+      IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Download exported Xcode project
+        shell: bash
+        env:
+          ARCHIVE_URL: ${{ inputs.archive_url }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$ARCHIVE_URL" == https://* ]] || { echo "An HTTPS URL is required" >&2; exit 1; }
+          [[ "$ARCHIVE_SHA256" =~ ^[a-fA-F0-9]{64}$ ]] || { echo "Invalid SHA-256" >&2; exit 1; }
+          if [[ "$ARCHIVE_URL" == https://drive.google.com/* ]]; then
+            python3 -m venv "$RUNNER_TEMP/gdown-venv"
+            "$RUNNER_TEMP/gdown-venv/bin/python" -m pip install gdown
+            "$RUNNER_TEMP/gdown-venv/bin/python" -m gdown "$ARCHIVE_URL" --output "$RUNNER_TEMP/ios-project.zip"
+          else
+            curl --fail --location --retry 3 --output "$RUNNER_TEMP/ios-project.zip" "$ARCHIVE_URL"
+          fi
+          echo "$ARCHIVE_SHA256  $RUNNER_TEMP/ios-project.zip" | shasum -a 256 -c -
+          mkdir -p "$GITHUB_WORKSPACE/build/iOS"
+          unzip -q "$RUNNER_TEMP/ios-project.zip" -d "$GITHUB_WORKSPACE/build/iOS"
+          test -d "$GITHUB_WORKSPACE/build/iOS/Unity-iPhone.xcodeproj" || { echo "ZIP must contain Unity-iPhone.xcodeproj at its root" >&2; exit 1; }
+          chmod +x "$GITHUB_WORKSPACE/build/iOS/process_symbols.sh" "$GITHUB_WORKSPACE/build/iOS/usymtool" "$GITHUB_WORKSPACE/build/iOS/lzma"
+
+      - name: Build unsigned app and package IPA
+        shell: bash
+        env:
+          IOS_BUNDLE_ID: ${{ inputs.bundle_id }}
+          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          PROJECT_PATH="$GITHUB_WORKSPACE/build/iOS/Unity-iPhone.xcodeproj"
+          OUTPUT="$RUNNER_TEMP/xcode-output"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/disable_legacy_ios_ads.py" "$GITHUB_WORKSPACE/build/iOS"
+          [[ "$IOS_BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || { echo "Invalid bundle identifier" >&2; exit 1; }
+          python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); old="PRODUCT_BUNDLE_IDENTIFIER = com.GhostStudio.StandRazval;"; n=s.count(old); assert n, "Original app bundle identifier not found"; p.write_text(s.replace(old, "PRODUCT_BUNDLE_IDENTIFIER = " + sys.argv[2] + ";")); print("Updated app bundle identifier in", n, "configurations")' "$PROJECT_PATH/project.pbxproj" "$IOS_BUNDLE_ID"
+          python3 -c 'import pathlib,re,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); s,n=re.subn(r"(?m)^\s*[A-F0-9]{24} /\* lib(?:fmodstudioL?|resonanceaudio)_(?:xros|xrsimulator)\.a in Frameworks \*/,\s*$", "", s); print("Removed visionOS link entries:", n); p.write_text(s)' "$PROJECT_PATH/project.pbxproj"
+          IMPORTS="$GITHUB_WORKSPACE/build/iOS/Libraries/Plugins/Heyzap Plugin/Assets/Plugins/iOS/Heyzap/HZMediationImports.m"
+          if [[ -f "$IMPORTS" ]]; then
+            python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); p.write_text(s.replace("@import iAd;", "#if __has_include(<iAd/iAd.h>)\n@import iAd;\n#endif"))' "$IMPORTS"
+          fi
+          xcodebuild -project "$PROJECT_PATH" -scheme Unity-iPhone -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CLANG_ENABLE_MODULES=YES \
+            OTHER_LDFLAGS_FRAMEWORK='-lsqlite3 -lxml2' \
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
+            CONFIGURATION_BUILD_DIR="$OUTPUT" build
+          APP="$OUTPUT/StandRazval.app"
+          test -d "$APP" || { echo "App bundle not found: $APP" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" "$GITHUB_WORKSPACE/build/ipa"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          zip -qry "$GITHUB_WORKSPACE/build/ipa/StandRazval-unsigned.ipa" Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: StandRazval-unsigned-IPA
+          path: build/ipa/StandRazval-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
