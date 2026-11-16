@@ -36,5 +36,17 @@ text = project.read_text(encoding="utf-8")
 text, count = re.subn(r'(?m)^[ \t]*[A-F0-9]{24} /\* libHeyzapAds\.a in Frameworks \*/,\s*$', '', text)
 if count != 1:
     raise SystemExit(f"Expected one Heyzap link entry; found {count}")
+# The package sometimes references the logging variant without exporting it.
+# Keep the normal FMOD library, which is required for audio.
+fmod_debug = root / "Libraries/Plugins/FMOD/platforms/ios/lib/libfmodstudiounitypluginL.a"
+if not fmod_debug.is_file():
+    text, removed = re.subn(r'(?m)^[ \t]*[A-F0-9]{24} /\* libfmodstudiounitypluginL\.a in Frameworks \*/,\s*$', '', text)
+    print(f"Removed missing FMOD logging library entries: {removed}")
+
+# This file only imports ad mediation frameworks. Legacy ads are disabled above,
+# so compiling those imports is unnecessary and fails with current iOS SDKs.
+imports = root / "Libraries/Plugins/Heyzap Plugin/Assets/Plugins/iOS/Heyzap/HZMediationImports.m"
+if imports.is_file():
+    imports.write_text("// Legacy ad mediation imports are disabled for iOS.\n", encoding="utf-8")
 project.write_text(text, encoding="utf-8")
 print(f"Disabled legacy Heyzap library; installed {len(functions)} iOS bridge stubs")
