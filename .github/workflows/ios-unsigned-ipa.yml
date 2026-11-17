@@ -70,7 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           PROJECT_PATH="$GITHUB_WORKSPACE/build/iOS/Unity-iPhone.xcodeproj"
-          OUTPUT="$RUNNER_TEMP/xcode-output"
+          DERIVED_DATA="$RUNNER_TEMP/ios-derived-data"
+          OUTPUT="$DERIVED_DATA/Build/Products/Release-iphoneos"
           python3 "$GITHUB_WORKSPACE/.github/scripts/disable_legacy_ios_ads.py" "$GITHUB_WORKSPACE/build/iOS"
           # Game Center is disabled in the client until server verification is ready.
           # Preserve its native symbol while excluding the unfinished GameKit bridge.
@@ -90,13 +91,12 @@ jobs:
             (cd "$GITHUB_WORKSPACE/build/iOS" && pod install)
             XCODE_CONTAINER=(-workspace "$GITHUB_WORKSPACE/build/iOS/Unity-iPhone.xcworkspace")
           fi
-          xcodebuild "${XCODE_CONTAINER[@]}" -scheme Unity-iPhone -configuration Release \
+          xcodebuild "${XCODE_CONTAINER[@]}" -scheme Unity-iPhone -configuration Release -derivedDataPath "$DERIVED_DATA" \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CLANG_ENABLE_MODULES=YES \
             OTHER_LDFLAGS_FRAMEWORK='-lsqlite3 -lxml2' \
-            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
-            CONFIGURATION_BUILD_DIR="$OUTPUT" build
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" build
           APP="$OUTPUT/StandRazval.app"
           test -d "$APP" || { echo "App bundle not found: $APP" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/ipa/Payload" "$GITHUB_WORKSPACE/build/ipa"
