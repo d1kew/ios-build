@@ -82,7 +82,15 @@ jobs:
           if [[ -f "$IMPORTS" ]]; then
             python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); p.write_text(s.replace("@import iAd;", "#if __has_include(<iAd/iAd.h>)\n@import iAd;\n#endif"))' "$IMPORTS"
           fi
-          xcodebuild -project "$PROJECT_PATH" -scheme Unity-iPhone -configuration Release \
+          XCODE_CONTAINER=(-project "$PROJECT_PATH")
+          if [[ -f "$GITHUB_WORKSPACE/build/iOS/Libraries/Plugins/iOS/StandRazvalGoogleSignIn.mm" ]]; then
+            test -f "$GITHUB_WORKSPACE/build/iOS/Podfile" || { echo "Google Sign-In Podfile missing; export the Unity iOS project again" >&2; exit 1; }
+            command -v pod >/dev/null || { echo "CocoaPods is required for Google Sign-In" >&2; exit 1; }
+            grep -q "pod 'GoogleSignIn'" "$GITHUB_WORKSPACE/build/iOS/Podfile" || { echo "Podfile must include GoogleSignIn in UnityFramework" >&2; exit 1; }
+            (cd "$GITHUB_WORKSPACE/build/iOS" && pod install)
+            XCODE_CONTAINER=(-workspace "$GITHUB_WORKSPACE/build/iOS/Unity-iPhone.xcworkspace")
+          fi
+          xcodebuild "${XCODE_CONTAINER[@]}" -scheme Unity-iPhone -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CLANG_ENABLE_MODULES=YES \
